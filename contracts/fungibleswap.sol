@@ -15,7 +15,64 @@ interface IERC20 {
     event Transfer(address indexed from, address indexed to, uint256 value);
     event Approval(address indexed owner, address indexed spender, uint256 value);
 }
+contract fsToken is IERC20 {
+    string name = 'FS-token';
+    string symbol = 'FST';
+    uint8 decimal = 18;
+    uint totalSupply = 1000000;
 
+    mapping(address => uint) public holdersRecord;
+    mapping(address => mapping(address => uint)) public allowances;
+
+    address protocol;
+    constructor() {
+        holdersRecord[msg.sender] = totalSupply;
+        protocol = msg.sender;
+    }
+
+    function getSupply() external override view returns(uint) {
+        return totalSupply;
+    }
+
+    function balanceOf(address holder) external override view returns(uint) {
+        return holdersRecord[holder];
+    }
+
+    function transfer(address recipent, uint amountToSend) external override returns(bool)  {
+        require(holdersRecord[msg.sender] >= amountToSend);
+        holdersRecord[recipent] =  holdersRecord[recipent] + amountToSend;
+        holdersRecord[msg.sender] =  holdersRecord[msg.sender] - amountToSend;
+        return true;
+    }
+    function getBal() external view returns(uint) {
+        return holdersRecord[msg.sender];
+    }
+
+    function approve(address spender, uint allowanceAmount) external override returns(bool) {
+        address owner = msg.sender;
+        allowances[owner][spender] = allowanceAmount;
+        return true;
+    }
+
+    function returnAllowance(address owner, address spender) external override view returns(uint) {
+        return allowances[owner][spender];
+    }
+
+    function transferFrom(address from, address to, uint transferAmount) external override returns(bool) {
+        address spender = msg.sender;
+        spendAllowance(from, spender, transferAmount);
+        holdersRecord[to] = holdersRecord[to] + transferAmount;
+        holdersRecord[from] =  holdersRecord[from] - transferAmount;
+        return true;
+    }
+
+    function spendAllowance(address owner, address spender, uint allowanceAmount) internal view {
+        uint allowanceBalance = allowances[owner][spender];
+        require(allowanceBalance >= allowanceAmount);
+        allowanceBalance = allowanceBalance - allowanceAmount;
+    }
+
+}
 contract fungibleSwap {
     address payable dexVault;
 
@@ -23,7 +80,7 @@ contract fungibleSwap {
         dexVault = payable(msg.sender);        
     }
 
-    FSToken public _token = FSToken(0xddaAd340b0f1Ef65169Ae5E41A8b10776a75482d);
+    fsToken public _token = fsToken(0xddaAd340b0f1Ef65169Ae5E41A8b10776a75482d);
 
     // IERC20 WETH;
     // IERC20 WMATIC;
@@ -51,8 +108,9 @@ contract fungibleSwap {
         dexVault.transfer(amount); 
         WETHProviders.push(liquidtyProvider);      
         tokenLiquidityPool[poolOptions.WETH] =  tokenLiquidityPool[poolOptions.WETH] + amount;
-        amountProvidedByProvider[msg.sender] = amount;
+        amountProvidedByProvider[msg.sender] = amountProvidedByProvider[msg.sender] + amount;
         providersStat[msg.sender][poolOptions.WETH] = providersStat[msg.sender][poolOptions.WETH] + amount;
+        _token.transferFrom(dexVault, liquidtyProvider, amount);
     } 
 
     function provideWmaticLiquidity(uint amount, address payable liquidtyProvider) external payable {
@@ -62,23 +120,23 @@ contract fungibleSwap {
         dexVault.transfer(amount); 
         WMATICProviders.push(liquidtyProvider);      
         tokenLiquidityPool[poolOptions.WMATIC] =  tokenLiquidityPool[poolOptions.WMATIC] + amount;
-        amountProvidedByProvider[msg.sender] = amount;
+        amountProvidedByProvider[msg.sender] = amountProvidedByProvider[msg.sender] + amount;
         providersStat[msg.sender][poolOptions.WMATIC] = providersStat[msg.sender][poolOptions.WMATIC] + amount;
+        _token.transferFrom(dexVault, liquidtyProvider, amount);
     } 
 
     function provideFstokenLiquidity(uint amount, address payable liquidtyProvider) external {
         require(liquidtyProvider == payable(msg.sender));
-        IERC20 token;
-        token.transferFrom(liquidtyProvider, dexVault, amount);
+        _token.transferFrom(liquidtyProvider, dexVault, amount);
         fsTOKENProviders.push(liquidtyProvider);
         tokenLiquidityPool[poolOptions.fsTOKEN] =  tokenLiquidityPool[poolOptions.fsTOKEN] + amount;
-        amountProvidedByProvider[msg.sender] = amount;
+        amountProvidedByProvider[msg.sender] =  amountProvidedByProvider[msg.sender] +  amount;
         providersStat[msg.sender][poolOptions.fsTOKEN] = providersStat[msg.sender][poolOptions.fsTOKEN] + amount;
     }
 
     event swaplogs(uint, poolOptions, address);
-    mapping(address => mapping(uint => bool)) swapDetails;
-    mapping(address => poolOptions) swapInfo;
+    mapping(address => mapping(uint => bool)) public swapDetails;
+    mapping(address => poolOptions) public swapInfo;
 
    
     function swap(uint amount, address payable swapper, IERC20 swappingToken, poolOptions swappingFor)
@@ -103,14 +161,14 @@ contract fungibleSwap {
             for(uint i = 0; i < WETHProviders.length; i++) {
                 uint _amountToShr;
                 _amountToShr = amount / 2;
-                _amountToShr = _amountToShr / WETHProviders[i].length;
+                _amountToShr = _amountToShr / WETHProviders.length;
                 rewardToken.transferFrom(dexVault, WETHProviders[i], _amountToShr);
             }
         } else if(reward == poolOptions.WMATIC) {
             for(uint i = 0; i < WMATICProviders.length; i++) {
                 uint _amountToShr;
                 _amountToShr = amount / 2;
-                _amountToShr = _amountToShr / WMATICProviders[i].length;
+                _amountToShr = _amountToShr / WMATICProviders.length;
                 rewardToken.transferFrom(dexVault, WMATICProviders[i], _amountToShr);
             }
         }
@@ -124,24 +182,18 @@ contract fungibleSwap {
     function getSwap(uint amount, address payable recipent, poolOptions tokenOut) external payable vault returns(bool) {
         require(amount == msg.value);
         require(swapInfo[recipent] == tokenOut);
-        require(swapDetails[recipent][amount] == true);
+        require(swapInfo[recipent] != poolOptions.NONE);
         recipent.transfer(amount);
         swapDetails[recipent][amount] = false;
         swapInfo[recipent] = poolOptions.NONE;
         return true;
-    }
+    }     
 
-
-               
-
-       
-   
-    
 }
 
 // create function to add liquidity = done
 // swap function = done
 // check if token exist in the above before swapping
 // reward function for liquidity provider = done
-// function to loan from liquidity pool
-// user get token when they provide liquidity same ratio
+// user get token when they provide liquidity same ratio = done
+// create fs token = done
